@@ -12,6 +12,23 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("yard", "src/main.zig");
+
+    const tres = std.build.Pkg{
+        .name = "tres",
+        .source = .{ .path = "src/zig-lsp/libs/tres/tres.zig" },
+    };
+
+    exe.addPackage(.{
+        .name = "zig-lsp",
+        .source = .{ .path = "src/zig-lsp/src/connection.zig" },
+        .dependencies = &.{tres},
+    });
+    exe.addPackage(.{
+        .name = "lsp-types",
+        .source = .{ .path = "src/zig-lsp/src/lsp.zig" },
+        .dependencies = &.{tres},
+    });
+
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();

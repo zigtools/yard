@@ -1,18 +1,25 @@
 const std = @import("std");
-const uri = @import("uri.zig");
-const lsp = @import("lsp.zig");
-const tres = @import("tres.zig");
 const scip = @import("scip.zig");
 const protobruh = @import("protobruh.zig");
+const lsptypes = @import("lsp-types");
 const LanguageClient = @import("LanguageClient.zig");
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
+    var argi = try std.process.ArgIterator.initWithAllocator(allocator);
+    defer argi.deinit();
+
+    _ = argi.next();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
     var lc = try LanguageClient.create(allocator, &.{ "typescript-language-server", "--stdio" });
     defer lc.deinit();
 
-    try lc.initCycle(.{
+    try lc.initCycle(arena_allocator, .{
         .textDocument = .{
             .documentSymbol = .{
                 .hierarchicalDocumentSymbolSupport = true,
@@ -20,83 +27,38 @@ pub fn main() !void {
         },
     });
 
-    const path = "C:\\Programming\\Zig\\yard\\staging\\snitchy2\\src\\index.js";
-    var file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    var bruh = std.ArrayList(u8).init(allocator);
+    defer bruh.deinit();
 
-    var data = try allocator.alloc(u8, (try file.stat()).size);
-    _ = try file.readAll(data);
+    var writer = bruh.writer();
 
-    const f_uri = try uri.fromPath(allocator, path);
-    defer allocator.free(f_uri);
+    while (argi.next()) |entry| {
+        const f_uri = try lc.openFile(entry);
+        const symbols = try lc.getSymbols(arena_allocator, f_uri);
 
-    try lc.writeJson(.{
-        .jsonrpc = "2.0",
-        .method = "textDocument/didOpen",
-        .params = lsp.DidOpenTextDocumentParams{ .textDocument = .{
-            .uri = f_uri,
-            .languageId = "js",
-            .version = 0,
-            .text = data,
-        } },
-    });
-    try lc.readAndPrint();
+        try writer.writeAll("<div>");
+        try writer.print("<h2>{s}</h2>\n{any}", .{ std.fs.path.basename(entry), SymbolsHtmlFormatter{ .file = std.fs.path.basename(entry), .symbols = symbols.?, .depth = 0 } });
+        try writer.writeAll("</div>");
+    }
 
-    try lc.writeJson(.{
-        .jsonrpc = "2.0",
-        .id = lc.id,
-        .method = "textDocument/documentSymbol",
-        .params = lsp.DocumentSymbolParams{ .textDocument = .{
-            .uri = f_uri,
-        } },
-    });
-    lc.id += 1;
-    const symbols = try lc.readResponse([]lsp.DocumentSymbol, allocator);
-    // _ = symbols;
-    std.log.info("{s}", .{lc.read_buf.items});
-    std.log.info("{any}", .{SymbolsFormatter{ .symbols = symbols.? }});
-    // abc("comptime Z: []const u8");
+    // const html = @embedFile("html.html");
 
-    // abc
+    // const result = try std.mem.replaceOwned(u8, allocator, html, "<!-- REPLACE ME -->", bruh.items);
+    // defer allocator.free(result);
+    try std.fs.cwd().writeFile("out.html", bruh.items);
 
-    var index = try std.fs.cwd().createFile("index.scip", .{});
-    defer index.close();
-    var bufw = std.io.bufferedWriter(index.writer());
+    // const path = "C:\\Programming\\Zig\\yard\\staging\\snitchy2\\src\\index.js";
 
-    const project_root = try uri.fromPath(allocator, "C:\\Programming\\Zig\\yard\\staging\\snitchy2");
-    std.log.info("Using project root {s}", .{project_root});
+    // const f_uri = try lc.openFile(path);
+    // defer allocator.free(f_uri);
 
-    var documents = std.ArrayListUnmanaged(scip.Document){};
-
-    try documents.append(allocator, .{
-        .language = "js",
-        .relative_path = "src/index.js",
-        .occurrences = .{},
-        .symbols = .{},
-    });
-
-    try protobruh.encode(scip.Index{
-        .metadata = .{
-            .version = .unspecified_protocol_version,
-            .tool_info = .{
-                .name = "yard",
-                .version = "bruh",
-                .arguments = .{},
-            },
-            .project_root = project_root,
-            .text_document_encoding = .utf8,
-        },
-        .documents = documents,
-        .external_symbols = .{},
-    }, bufw.writer());
-
-    try bufw.flush();
+    // const symbols = try lc.getSymbols(f_uri);
+    // std.log.info("{any}", .{SymbolsFormatter{ .symbols = symbols.? }});
 }
 
 pub const SymbolsFormatter = struct {
-    symbols: []lsp.DocumentSymbol,
+    symbols: []const lsptypes.DocumentSymbol,
     depth: usize = 0,
-    scip_symbols: bool = true,
 
     pub fn format(
         sf: SymbolsFormatter,
@@ -115,9 +77,38 @@ pub const SymbolsFormatter = struct {
                 try writer.print("{any}", .{SymbolsFormatter{
                     .symbols = c,
                     .depth = sf.depth + 1,
-                    .scip_symbols = scip_symbols,
                 }});
         }
+    }
+};
+
+pub const SymbolsHtmlFormatter = struct {
+    file: []const u8,
+    symbols: []const lsptypes.DocumentSymbol,
+    depth: usize = 0,
+
+    pub fn format(
+        sf: SymbolsHtmlFormatter,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        try writer.writeAll("<ul>");
+        for (sf.symbols) |symbol| {
+            try writer.writeByteNTimes(' ', sf.depth * 4);
+            try writer.print("<li><a href='https://github.com/snitchbcc/snitchy2/blob/master/src/{s}#L{d}-L{d}'>{s}</a></li>", .{ sf.file, symbol.range.start.line + 1, symbol.range.end.line + 1, symbol.name });
+            try writer.writeAll("\n");
+            if (symbol.children) |c|
+                try writer.print("{any}", .{SymbolsHtmlFormatter{
+                    .file = sf.file,
+                    .symbols = c,
+                    .depth = sf.depth + 1,
+                }});
+        }
+        try writer.writeAll("</ul>");
     }
 };
 
